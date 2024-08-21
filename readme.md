@@ -1,4 +1,4 @@
-# The OmniChat
+# Mwalimu-AI
 
 Streamlit app to interact with OpenAI GPT-4o, with text, images and audio (using Whisper and TTS).
 
