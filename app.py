@@ -1,241 +1,173 @@
 import streamlit as st
+import pandas as pd
 from openai import OpenAI
-import dotenv
+from sqlalchemy import create_engine, text
+import matplotlib.pyplot as plt
+import seaborn as sns
 import os
+from dotenv import load_dotenv
 from PIL import Image
-from audio_recorder_streamlit import audio_recorder
-import base64
-from io import BytesIO
 
-dotenv.load_dotenv()
+#%% Load environment variables (e.g., for API keys)
+from dotenv import load_dotenv
+load_dotenv()
 
-
-# Function to query and stream the response from the LLM
-def stream_llm_response(client, model_params):
-    response_message = ""
-
-    for chunk in client.chat.completions.create(
-        model=model_params["model"] if "model" in model_params else "gpt-4o-2024-05-13",
-        messages=st.session_state.messages,
-        temperature=model_params["temperature"] if "temperature" in model_params else 0.0,
-        max_tokens=4096,
-        stream=True,
-    ):
-        response_message += chunk.choices[0].delta.content if chunk.choices[0].delta.content else ""
-        yield chunk.choices[0].delta.content if chunk.choices[0].delta.content else ""
-
-    st.session_state.messages.append({
-        "role": "assistant", 
-        "content": [
-            {
-                "type": "text",
-                "text": response_message,
-            }
-        ]})
+#%% Data preparation
+df = pd.read_csv("sales_data_sample.csv")
 
 
-# Function to convert file to base64
-def get_image_base64(image_raw):
-    buffered = BytesIO()
-    image_raw.save(buffered, format=image_raw.format)
-    img_byte = buffered.getvalue()
+#%%SQL Database Set-up
+temp_db = create_engine('sqlite:///:memory:', echo=True)
+data = df.to_sql(name='Sales',con=temp_db)
 
-    return base64.b64encode(img_byte).decode('utf-8')
+
+#%% Set-up Open AI API Key
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+client = OpenAI(
+    # This is the default and can be omitted
+    api_key=OPENAI_API_KEY,
+)
 
 
 
-def main():
+#%% Helper Functions
+#%% Helper Functions
+def create_table_definition_prompt(df):
+    """Create a SQL table structure definition as prompt for GPT."""
+    columns = ", ".join(df.columns)
+    return f"### sqlite SQL table with columns:\n# Sales({columns})\n"
 
-    # --- Page Config ---
-    st.set_page_config(
-        page_title="Mwalimu-AI",
-        page_icon="🤖",
-        layout="centered",
-        initial_sidebar_state="expanded",
+def combine_prompts(df, query_prompt):
+    """Combine table definition and user query prompt."""
+    definition = create_table_definition_prompt(df)
+    query_init_string = f"### A query to answer: {query_prompt}\nSELECT"
+    return definition + query_init_string
+
+def handle_response(response):
+    """Extract SQL query from GPT response."""
+    query = response.choices[0].message.content.strip()
+    if not query.lower().startswith("select"):
+        query = "SELECT " + query
+    return query
+
+def execute_sql(query):
+    """Execute a SQL query and return results as a dataframe."""
+    with temp_db.connect() as conn:
+        result = conn.execute(text(query))
+        return pd.DataFrame(result.fetchall(), columns=result.keys())
+
+def remove_backticks(input_string):
+    # Remove all occurrences of the backtick character `
+    cleaned_string = input_string.replace("`", "")
+    # Remove all occurrences of the word 'python' (case-insensitive)
+    cleaned_string = cleaned_string.replace("python", "")
+    return cleaned_string
+
+def generate_plot_code(df):
+    """Generate Python plotting code using GPT based on the dataframe structure."""
+    columns = ", ".join(df.columns)
+    prompt = f"Generate Python code to plot a DataFrame with columns: {columns} using matplotlib. Output only the code such that it can be immediately executed in python. And be creative with the types of graphs produced"
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0,
+        max_tokens=4000,
     )
+    return remove_backticks(response.choices[0].message.content.strip())
 
-    # --- Header ---
-    st.html("""<h1 style="text-align: center; color: #6ca395;">🤖 <i>Mwalimu-AI</i> 💬</h1>""")
+#%% Streamlit Page Layout
+# Set page configuration
+st.set_page_config(
+    page_title="Byte Insight - AI SQL Query and Data Visualization",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-    # --- Side Bar ---
-    with st.sidebar:
-        default_openai_api_key = os.getenv("OPENAI_API_KEY") if os.getenv("OPENAI_API_KEY") is not None else ""  # only for development environment, otherwise it should return None
-        with st.popover("🔐 OpenAI API Key"):
-            openai_api_key = st.text_input("Introduce your OpenAI API Key (https://platform.openai.com/)", value=default_openai_api_key, type="password")
+# Sidebar Setup
+st.sidebar.title("About the App")
+st.sidebar.info(
+    """
+    This app enables users to interact with a database using natural language queries. Instead of relying on complex SQL commands, users can simply input their requests in everyday language. The app processes the input, extracts relevant data from the database, and returns the results in a user-friendly format—either as a data table or a dynamic visualization. This tool streamlines data retrieval and makes it accessible to non-technical users, empowering them to make data-driven decisions with ease.
+    """
+)
 
-    
-    # --- Main Content ---
-    # Checking if the user has introduced the OpenAI API Key, if not, a warning is displayed
-    if openai_api_key == "" or openai_api_key is None or "sk-" not in openai_api_key:
-        st.write("#")
-        st.warning("⬅️ Please introduce your OpenAI API Key (make sure to have funds) to continue...")
+# Header
+# CSS to center elements
+st.markdown(
+    """
+    <style>
+    .center-text {
+        text-align: center;
+    }
+    .center-image img {
+        display: block;
+        margin-left: auto;
+        margin-right: auto;
+    }
+    </style>
+    """, unsafe_allow_html=True
+)
 
-        with st.sidebar:
-            st.write("#")
-            st.write("#")
-            st.video("https://www.youtube.com/watch?v=lkss2tdGoNs")
-            st.write("📋[UICT Blog](https://uictlearn.africa/ux/)")
+# Header
+st.markdown('<h1 class="center-text">Byte Insight💡</h1>', unsafe_allow_html=True)
+st.markdown('<h3 class="center-text">AI-Powered Data Query and Visualization🦾</h3>', unsafe_allow_html=True)
 
-    else:
-        client = OpenAI(api_key=openai_api_key)
+# Image
+image = Image.open("Data.png")  # Replace with your image path
+st.markdown('<div class="center-image">', unsafe_allow_html=True)
+st.image(image, use_column_width=True)
+st.markdown('</div>', unsafe_allow_html=True)
 
-        if "messages" not in st.session_state:
-            st.session_state.messages = []
+# Input form for user query
+st.write("### Step 1: Enter your query:")
+query_prompt = st.text_input("What would you like to know about the data?")
 
-        # Displaying the previous messages if there are any
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                for content in message["content"]:
-                    if content["type"] == "text":
-                        st.write(content["text"])
-                    elif content["type"] == "image_url":      
-                        st.image(content["image_url"]["url"])
+# Run the query
+if st.button("Run Query"):
+    with st.spinner("Generating SQL query..."):
+        gpt_response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": combine_prompts(df, query_prompt)}],
+            temperature=0,
+            max_tokens=4000
+        )
 
-        # Side bar model options and inputs
-        with st.sidebar:
+        # Extract and run the generated SQL query
+        sql_query = handle_response(gpt_response)
+        #st.write(f"**Generated SQL Query**:\n{sql_query}")
+        
+        # Execute the SQL query and display the result as a dataframe
+        result_df = execute_sql(sql_query)
+        if not result_df.empty:
+            st.write("### Step 2: View the Query Results:")
+            st.dataframe(result_df)
 
-            st.divider()
-
-            model = st.selectbox("Select a model:", [
-                "gpt-4o-2024-05-13", 
-                "gpt-4-turbo", 
-                "gpt-3.5-turbo-16k", 
-                "gpt-4", 
-                "gpt-4-32k",
-            ], index=0)
+# Option to visualize the results
+if st.button("Visualize Data"):
+    with st.spinner("Generating plot code..."):
+        gpt_response = client.chat.completions.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": combine_prompts(df, query_prompt)}],
+        temperature=0,
+        max_tokens=4000
+    )
+        sql_query = handle_response(gpt_response)
+        #st.write(f"**Generated SQL Query**:\n{sql_query}")
             
-            with st.popover("⚙️ Model parameters"):
-                model_temp = st.slider("Temperature", min_value=0.0, max_value=2.0, value=0.3, step=0.1)
+            # Execute the SQL query and display the result as a dataframe
+        result_df = execute_sql(sql_query)
+        plot_code = generate_plot_code(result_df)
+        #st.write(f"**Generated Plot Code**:\n{plot_code}")
 
-            audio_response = st.toggle("Audio response", value=False)
-            if audio_response:
-                cols = st.columns(2)
-                with cols[0]:
-                    tts_voice = st.selectbox("Select a voice:", ["alloy", "echo", "fable", "onyx", "nova", "shimmer"])
-                with cols[1]:
-                    tts_model = st.selectbox("Select a model:", ["tts-1", "tts-1-hd"], index=1)
+        # Dynamically execute the generated plot code in a secure manner
+        fig, ax = plt.subplots()
+        # Use exec() but ensure the plot is built correctly by capturing the generated figure
+        exec(plot_code, {"df": result_df, "plt": plt, "ax": ax})
 
-            model_params = {
-                "model": model,
-                "temperature": model_temp,
-            }
+        # Display the plot in Streamlit
+        st.write("### Step 3: Visualized Results")
+        st.pyplot(plt.gcf())
 
-            def reset_conversation():
-                if "messages" in st.session_state and len(st.session_state.messages) > 0:
-                    st.session_state.pop("messages", None)
-
-            st.button(
-                "🗑️ Reset conversation", 
-                on_click=reset_conversation,
-            )
-
-            st.divider()
-
-            # Image Upload
-            if model in ["gpt-4o-2024-05-13", "gpt-4-turbo"]:
-                    
-                st.write("### **🖼️ Add an image:**")
-
-                def add_image_to_messages():
-                    if st.session_state.uploaded_img or ("camera_img" in st.session_state and st.session_state.camera_img):
-                        img_type = st.session_state.uploaded_img.type if st.session_state.uploaded_img else "image/jpeg"
-                        raw_img = Image.open(st.session_state.uploaded_img or st.session_state.camera_img)
-                        img = get_image_base64(raw_img)
-                        st.session_state.messages.append(
-                            {
-                                "role": "user", 
-                                "content": [{
-                                    "type": "image_url",
-                                    "image_url": {"url": f"data:{img_type};base64,{img}"}
-                                }]
-                            }
-                        )
-
-                cols_img = st.columns(2)
-
-                with cols_img[0]:
-                    with st.popover("📁 Upload"):
-                        st.file_uploader(
-                            "Upload an image", 
-                            type=["png", "jpg", "jpeg"], 
-                            accept_multiple_files=False,
-                            key="uploaded_img",
-                            on_change=add_image_to_messages,
-                        )
-
-                with cols_img[1]:                    
-                    with st.popover("📸 Camera"):
-                        activate_camera = st.checkbox("Activate camera")
-                        if activate_camera:
-                            st.camera_input(
-                                "Take a picture", 
-                                key="camera_img",
-                                on_change=add_image_to_messages,
-                            )
-
-            # Audio Upload
-            st.write("#")
-            st.write("### **🎤 Add an audio:**")
-
-            audio_prompt = None
-            if "prev_speech_hash" not in st.session_state:
-                st.session_state.prev_speech_hash = None
-
-            speech_input = audio_recorder("Press to talk:", icon_size="3x", neutral_color="#6ca395", )
-            if speech_input and st.session_state.prev_speech_hash != hash(speech_input):
-                st.session_state.prev_speech_hash = hash(speech_input)
-                transcript = client.audio.transcriptions.create(
-                    model="whisper-1", 
-                    file=("audio.wav", speech_input),
-                )
-
-                audio_prompt = transcript.text
-
-            st.divider()
-            st.video("https://www.youtube.com/watch?v=lkss2tdGoNs")
-            st.write("📋[UICT Blog](https://uictlearn.africa/ux/)")
-
-
-
-        # Chat input
-        if prompt := st.chat_input("Hi! Ask me anything...") or audio_prompt:
-            st.session_state.messages.append(
-                
-                #{"role": "system", "content": "You are an English/Swahili tutor. Please do not provide answers to questions but rather guide the students. Respond to the prompt in the language provided."},
-                {
-                    "role": "user", 
-                    "content": [{
-                        "type": "text",
-                        "text": prompt or audio_prompt,
-                    }]
-                }
-            )
-            
-            # Displaying the new messages
-            with st.chat_message("user"):
-                st.markdown(prompt)
-
-            with st.chat_message("assistant"):
-                st.write_stream(
-                    stream_llm_response(client, model_params)
-                )
-
-            # --- Added Audio Response (optional) ---
-            if audio_response:
-                response =  client.audio.speech.create(
-                    model=tts_model,
-                    voice=tts_voice,
-                    input=st.session_state.messages[-1]["content"][0]["text"],
-                )
-                audio_base64 = base64.b64encode(response.content).decode('utf-8')
-                audio_html = f"""
-                <audio controls autoplay>
-                    <source src="data:audio/wav;base64,{audio_base64}" type="audio/mp3">
-                </audio>
-                """
-                st.html(audio_html)
-
-
-
-if __name__=="__main__":
-    main()
+# Footer
+st.markdown("---")
+st.write("Designed By Royal Mcgrady Data Science")
