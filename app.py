@@ -370,7 +370,7 @@ def main():
                     response_audio = asyncio.run(connect_to_openai_websocket([audio_bytes]))
                     
                     if response_audio:
-                        st.success("Response received! Playing Thuto's answer...")
+                        st.success("Response received! Playing Mwalimu's answer...")
                         play_audio_stream(response_audio)
                         
         if prompt := st.chat_input("Hi! Ask me anything...") or audio_prompt:
