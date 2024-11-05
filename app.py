@@ -191,12 +191,14 @@ def main():
         layout="centered",
         initial_sidebar_state="expanded",
     )
-
     # --- Header ---
     st.html("""<h1 style="text-align: center; color: #6ca395;">🤖 <i>Mwalimu-AI</i> 💬</h1>""")
     #st.write("Ekurhuleni Map")
-    #image = Image.open("data.png")  # Replace with your image path
-    #st.image(image, use_column_width=True)
+    image = Image.open("im.jpg") 
+    # Replace with your image path
+    left_co, cent_co,last_co = st.columns(3)
+    with cent_co:
+        st.image(image, use_column_width=False)
     # --- Side Bar ---
     with st.sidebar:
         default_openai_api_key = os.getenv("OPENAI_API_KEY") if os.getenv("OPENAI_API_KEY") is not None else ""  # only for development environment, otherwise it should return None
